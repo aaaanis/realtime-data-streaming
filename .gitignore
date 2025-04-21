@@ -1,0 +1,16 @@
+
+---
+
+## `.gitignore`
+
+```gitignore
+__pycache__/
+*.pyc
+.env
+
+.terraform/
+terraform.tfstate*
+tfplan*
+
+.vscode/
+.idea/

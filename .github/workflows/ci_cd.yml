@@ -1,0 +1,73 @@
+name: CI‑CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  TF_IN_AUTOMATION: "1"
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install -r producer/requirements.txt -r snowpark/requirements.txt
+          pip install snowflake-connector-python pytest
+
+      - name: Terraform init & apply
+        id: tf
+        working-directory: terraform
+        env:
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
+          CONFLUENT_API_KEY:   ${{ secrets.CONFLUENT_API_KEY }}
+          CONFLUENT_API_SECRET:${{ secrets.CONFLUENT_API_SECRET }}
+          ENV_ID:              ${{ secrets.CONFLUENT_ENV_ID }}
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var="snowflake_account=$SNOWFLAKE_ACCOUNT" \
+            -var="snowflake_user=$SNOWFLAKE_USER" \
+            -var="snowflake_password=$SNOWFLAKE_PASSWORD" \
+            -var="snowflake_role=$SNOWFLAKE_ROLE" \
+            -var="confluent_api_key=$CONFLUENT_API_KEY" \
+            -var="confluent_api_secret=$CONFLUENT_API_SECRET" \
+            -var="environment_id=$ENV_ID"
+          echo "BOOTSTRAP=$(terraform output -raw bootstrap_servers)" >> "$GITHUB_ENV"
+          echo "TOPIC=$(terraform output -raw topic_name)"        >> "$GITHUB_ENV"
+
+      - name: Publish sales events
+        working-directory: producer
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ env.BOOTSTRAP }}
+          KAFKA_SASL_USERNAME:     ${{ secrets.CONFLUENT_API_KEY }}
+          KAFKA_SASL_PASSWORD:     ${{ secrets.CONFLUENT_API_SECRET }}
+          KAFKA_TOPIC:             ${{ env.TOPIC }}
+          NUM_EVENTS:              "500"
+          SLEEP_MS:                "50"
+        run: python producer.py
+
+      - name: Latency SLO
+        env:
+          SNOWFLAKE_ACCOUNT:  ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:     ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE:     ${{ secrets.SNOWFLAKE_ROLE }}
+        run: pytest -q monitoring/latency_slo_check.py
